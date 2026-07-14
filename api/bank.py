@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Optional
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_cors import CORS
 from supabase import create_client
 
@@ -93,50 +93,24 @@ log = logging.getLogger("bank")
 app = Flask(__name__)
 CORS(app)
 
-# Vercel treats this Flask app as the catch-all for every path that isn't an
-# exact static-file match, which takes precedence over vercel.json rewrites —
-# so "/" must be served by Flask itself rather than relying on Vercel's
-# static-asset routing to resolve it to public/index.html.
-#
-# The function bundle's filesystem layout differs from the repo layout, and
-# Vercel only bundles files it can trace (vercel.json forces public/** in
-# via includeFiles). Resolve the file by probing the plausible locations
-# once at import; if none exist, / returns a diagnostic listing instead of
-# a bare 404 so a failed deploy tells us exactly what IS on disk.
-def _find_frontend():
-    here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(os.path.dirname(here), "public", "index.html"),  # repo layout
-        os.path.join(here, "public", "index.html"),                   # bundled beside function
-        os.path.join(os.getcwd(), "public", "index.html"),            # cwd = project base
-        "/var/task/public/index.html",                                # Lambda task root
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-    return None
-
-
-_FRONTEND_PATH = _find_frontend()
+# Vercel's auto-detected Flask function is the catch-all for every path that
+# isn't an exact static-file match — including bare "/", which outranks any
+# vercel.json rewrite. And the function bundle does NOT contain public/**
+# (verified empirically: /var/task holds only the Python project files), so
+# Flask cannot read index.html from disk in production. But Vercel's CDN
+# serves public/index.html at /index.html just fine. The fix Vercel's own
+# Flask guide uses for static assets: redirect from the function to the
+# CDN-served path. Locally (repo layout intact) we serve the file directly.
+_LOCAL_FRONTEND = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public", "index.html"
+)
 
 
 @app.get("/")
 def serve_frontend():
-    if _FRONTEND_PATH:
-        return send_from_directory(
-            os.path.dirname(_FRONTEND_PATH), os.path.basename(_FRONTEND_PATH)
-        )
-    # Diagnostic fallback: show what the bundle actually contains so the
-    # missing-file problem is debuggable from the response itself.
-    here = os.path.dirname(os.path.abspath(__file__))
-    return jsonify({
-        "error": "frontend_not_bundled",
-        "cwd": os.getcwd(),
-        "cwd_listing": sorted(os.listdir(os.getcwd()))[:50],
-        "file_dir": here,
-        "file_dir_listing": sorted(os.listdir(here))[:50],
-        "parent_listing": sorted(os.listdir(os.path.dirname(here)))[:50],
-    }), 500
+    if os.path.isfile(_LOCAL_FRONTEND):  # local dev: repo layout exists
+        return send_from_directory(os.path.dirname(_LOCAL_FRONTEND), "index.html")
+    return redirect("/index.html", code=307)  # production: CDN serves it
 
 # Server-side client, authenticated with the service_role key — this is the
 # only key that ever touches this backend, and it bypasses RLS entirely.
