@@ -9,3 +9,6 @@ __pycache__/
 
 # Vercel
 .vercel/
+
+# macOS
+.DS_Store

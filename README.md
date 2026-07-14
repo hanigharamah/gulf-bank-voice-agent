@@ -31,14 +31,17 @@ for the full contract.
 
 ## Deploy to Vercel
 
-This repo is structured for Vercel's current conventions (no legacy `builds`
-config):
-- `api/bank.py` — the Flask backend; Vercel auto-detects the `app` WSGI
-  object at this path and deploys it as a single Vercel Function
-- `public/index.html` — the static frontend, served automatically at `/`
-  from Vercel's static-assets convention
-- `vercel.json` — `rewrites` sends `/tools/*` and `/health` to the backend
-  function; everything else falls through to the static page
+This repo relies on Vercel's zero-config auto-detection — no `vercel.json`
+routing needed at all:
+- `api/bank.py` — the Flask backend, deployed as a single Vercel Function.
+  It's named `bank.py` (not `index.py`) to avoid colliding with
+  `public/index.html`; `pyproject.toml`'s `[tool.vercel] entrypoint` tells
+  Vercel exactly where to find the Flask `app` object since the filename
+  isn't one of Vercel's auto-detected defaults.
+- `public/index.html` — the static frontend, served automatically at `/`.
+- Any request that doesn't match a static file in `public/**` (e.g.
+  `/tools/verify-identity`, `/health`) falls through to the Flask function,
+  whose own `@app.route` decorators handle it — no manual rewrites required.
 
 Steps:
 1. Push this repo to GitHub (already done if you're reading this from the repo).
