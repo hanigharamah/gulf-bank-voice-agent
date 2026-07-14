@@ -30,6 +30,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from typing import Optional
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -113,7 +114,7 @@ def parse_webhook(body: dict) -> CallContext:
 # completely different function instance — the DB is the only shared state).
 # --------------------------------------------------------------------------
 
-def get_verified_account(conversation_id) -> str | None:
+def get_verified_account(conversation_id) -> Optional[str]:
     if not conversation_id:
         return None
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=VERIFICATION_TTL_SECONDS)).isoformat()

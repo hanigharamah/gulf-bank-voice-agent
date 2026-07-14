@@ -31,10 +31,14 @@ for the full contract.
 
 ## Deploy to Vercel
 
-This repo is structured for Vercel out of the box:
-- `api/index.py` — the Flask backend, imported as a WSGI app (Vercel's Python runtime)
-- `index.html` — the static frontend, served at the root
-- `vercel.json` — routes `/tools/*` and `/health` to the backend, everything else to the static page
+This repo is structured for Vercel's current conventions (no legacy `builds`
+config):
+- `api/index.py` — the Flask backend; Vercel auto-detects the `app` WSGI
+  object at this path and deploys it as a single Vercel Function
+- `public/index.html` — the static frontend, served automatically at `/`
+  from Vercel's static-assets convention
+- `vercel.json` — `rewrites` sends `/tools/*` and `/health` to the backend
+  function; everything else falls through to the static page
 
 Steps:
 1. Push this repo to GitHub (already done if you're reading this from the repo).
