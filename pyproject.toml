@@ -1,2 +1,13 @@
+[project]
+name = "gulf-bank-voice-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "python-dotenv>=1.0",
+    "supabase>=2.6",
+]
+
 [tool.vercel]
 entrypoint = "api.bank:app"
