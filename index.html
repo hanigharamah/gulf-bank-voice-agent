@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gulf Retail Bank — Voice Agent Deployment Demo</title>
+
+<!-- ========================================================================
+     Demo frontend — Supabase-backed variant.
+
+     Same three zones as the original (header / voice agent / live tool
+     calls), but the live panel is now fed by SUPABASE REALTIME instead of
+     a hand-rolled SSE stream, because the backend runs as stateless Vercel
+     serverless functions that can't hold a long-lived /events connection
+     open. The backend inserts/updates rows in the `tool_call_events` table;
+     this page subscribes to Postgres changes on that table directly using
+     the Supabase client, authenticated with the PUBLIC anon key (which can
+     only read that one table — see schema_realtime.sql).
+
+     The browser still never calls the webhook tool endpoints — those are
+     server-to-server (ElevenLabs → Vercel). Every card comes from a real
+     database row change; nothing is simulated. Live-only: no history is
+     fetched on load, matching the original SSE design ("no replay").
+     ==================================================================== -->
+
+<style>
+  :root {
+    --bg:        #f6f7f5;
+    --surface:   #ffffff;
+    --border:    #e3e6e1;
+    --text:      #1f2a24;
+    --text-dim:  #68766d;
+    --accent:    #1b6e4a;
+    --accent-bg: #e9f3ee;
+    --amber:     #b07a1e;
+    --amber-bg:  #faf3e3;
+    --red:       #b3372f;
+    --red-bg:    #faeceb;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  header .mock-note {
+    font-size: 13px;
+    color: var(--text-dim);
+    border-inline-start: 1px solid var(--border);
+    padding-inline-start: 16px;
+  }
+  .spacer { flex: 1; }
+
+  #sse-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    font-weight: 550;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  #sse-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  #sse-status.connected    { color: var(--accent); background: var(--accent-bg); }
+  #sse-status.connected    .dot { background: var(--accent); }
+  #sse-status.reconnecting { color: var(--amber);  background: var(--amber-bg); }
+  #sse-status.reconnecting .dot { background: var(--amber); animation: pulse 1s infinite; }
+  #sse-status.disconnected { color: var(--red);    background: var(--red-bg); }
+  #sse-status.disconnected .dot { background: var(--red); }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 40px 28px 56px;
+  }
+
+  .zone-label {
+    font-size: 12px;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  #agent-zone {
+    text-align: center;
+    margin-bottom: 44px;
+  }
+  #agent-zone .zone-label { margin-bottom: 18px; }
+  #agent-zone .hint {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin: 22px auto 0;
+    max-width: 440px;
+  }
+  #widget-container {
+    position: relative;
+    will-change: transform;
+    width: 340px;
+    min-height: 200px;
+    margin: 0 auto;
+  }
+
+  #tool-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .panel-head h2 { font-size: 15px; font-weight: 650; }
+  #call-count { font-size: 13px; color: var(--text-dim); }
+
+  #stream-banner {
+    display: none;
+    font-size: 13.5px;
+    padding: 9px 14px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    background: var(--amber-bg);
+    color: var(--amber);
+    border: 1px solid #ecd9ac;
+  }
+
+  #empty-state {
+    color: var(--text-dim);
+    font-size: 14px;
+    text-align: center;
+    padding: 44px 0;
+  }
+
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: var(--surface);
+  }
+  .card.error { border-color: #e5b6b2; background: #fdf7f7; }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .tool-name { font-family: var(--mono); font-size: 14px; font-weight: 650; }
+  .card-time { font-size: 12.5px; color: var(--text-dim); margin-inline-start: auto; }
+
+  .chip {
+    font-size: 12px;
+    font-weight: 650;
+    padding: 2px 10px;
+    border-radius: 999px;
+  }
+  .chip.received  { background: var(--amber-bg);  color: var(--amber); }
+  .chip.completed { background: var(--accent-bg); color: var(--accent); }
+  .chip.error     { background: var(--red-bg);    color: var(--red); }
+
+  .card-message { font-size: 14px; margin-top: 8px; }
+
+  details { margin-top: 8px; }
+  details summary {
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 550;
+    color: var(--text-dim);
+    user-select: none;
+  }
+  details summary:hover { color: var(--text); }
+  details pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    background: #f3f5f2;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 6px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    unicode-bidi: plaintext;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Gulf Retail Bank — Voice Agent Deployment Demo</h1>
+  <span class="mock-note">Mock banking backend — no real accounts or money</span>
+  <span class="spacer"></span>
+  <span id="sse-status" class="disconnected">
+    <span class="dot"></span><span id="sse-status-text">connecting…</span>
+  </span>
+</header>
+
+<main>
+  <section id="agent-zone">
+    <div class="zone-label">Voice agent</div>
+    <div id="widget-container">
+      <elevenlabs-convai agent-id="agent_6001kxexyh0zf9gt2j1dtkjtkkhs"></elevenlabs-convai>
+      <script src="https://unpkg.com/@elevenlabs/convai-widget-embed"
+              async type="text/javascript"></script>
+    </div>
+    <p class="hint">
+      Talk to the bank agent here — Arabic or English. Every tool it uses
+      appears live in the panel below.
+    </p>
+  </section>
+
+  <section>
+    <div class="zone-label">Live tool calls</div>
+    <div id="tool-panel">
+      <div class="panel-head">
+        <h2>Webhook activity</h2>
+        <span id="call-count"></span>
+      </div>
+      <div id="stream-banner"></div>
+      <div id="empty-state">No tool calls yet — start a conversation.</div>
+      <div id="cards"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+/* ==========================================================================
+   CONFIG — the two values to change per environment. Both are safe to be
+   public: SUPABASE_ANON_KEY can only read the tool_call_events table (see
+   schema_realtime.sql) — it has zero access to accounts/transactions/
+   verified_sessions/processed_tool_calls, which stay locked to the
+   service_role key the backend uses server-side.
+   ======================================================================== */
+const SUPABASE_URL = "https://peqhbtqzxbuhldxflcab.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_e9tx0R4yijb0BGZeBsI5NQ_QRQjS3K7";
+
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ==========================================================================
+   Realtime connection with honest state reporting.
+
+   supabase-js manages the websocket and its own reconnection internally;
+   we just reflect its channel status honestly in the pill rather than
+   hand-rolling backoff the way the SSE version had to. The pill only ever
+   says "connected" once the channel actually reports SUBSCRIBED.
+   ======================================================================== */
+const statusPill   = document.getElementById("sse-status");
+const statusText   = document.getElementById("sse-status-text");
+const streamBanner = document.getElementById("stream-banner");
+
+function setConnectionState(state, label) {
+  statusPill.className = state;    // connected | reconnecting | disconnected
+  statusText.textContent = label;
+  if (state === "connected") {
+    streamBanner.style.display = "none";
+  } else {
+    streamBanner.style.display = "block";
+    streamBanner.textContent =
+      "Event stream " + label + " — tool calls made now will not appear " +
+      "until the connection is restored.";
+  }
+}
+
+const channel = supabase
+  .channel("tool-call-events")
+  .on("postgres_changes",
+      { event: "INSERT", schema: "public", table: "tool_call_events" },
+      (payload) => renderToolEvent(rowToEvent(payload.new)))
+  .on("postgres_changes",
+      { event: "UPDATE", schema: "public", table: "tool_call_events" },
+      (payload) => renderToolEvent(rowToEvent(payload.new)))
+  .subscribe((status) => {
+    if (status === "SUBSCRIBED") {
+      setConnectionState("connected", "connected");
+    } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+      setConnectionState("reconnecting", "reconnecting");
+    } else if (status === "CLOSED") {
+      setConnectionState("disconnected", "disconnected");
+    }
+  });
+
+// Map a tool_call_events row onto the same shape the card-rendering code
+// below expects (unchanged from the original SSE-event shape).
+function rowToEvent(row) {
+  return {
+    call_id: row.call_id,
+    tool: row.tool_name,
+    status: row.status,
+    parameters: row.parameters,
+    result: row.result,
+    timestamp: row.updated_at || row.created_at,
+  };
+}
+
+/* ==========================================================================
+   Tool-call cards — identical rendering logic to the original SSE version.
+   Two events per call share a call_id (INSERT "received", UPDATE
+   "completed"/"error"); the first creates a card, the second updates it in
+   place. All payload content uses textContent, never innerHTML.
+   ======================================================================== */
+const cardsEl   = document.getElementById("cards");
+const emptyEl   = document.getElementById("empty-state");
+const countEl   = document.getElementById("call-count");
+const cardIndex = new Map();
+let callCount   = 0;
+
+function renderToolEvent(event) {
+  const tool   = event.tool || event.tool_name || "unknown_tool";
+  const status = event.status || "received";
+  const callId = event.call_id;
+
+  const existing = callId && cardIndex.get(callId);
+  if (existing) {
+    updateCard(existing, status, event.result);
+  } else {
+    const card = buildCard(tool, status, event);
+    if (callId) cardIndex.set(callId, card);
+    emptyEl.style.display = "none";
+    cardsEl.prepend(card);
+    callCount += 1;
+    countEl.textContent = callCount + (callCount === 1 ? " call" : " calls");
+  }
+}
+
+function buildCard(tool, status, event) {
+  const card = document.createElement("div");
+  card.className = "card";
+
+  const top = document.createElement("div");
+  top.className = "card-top";
+
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = tool;
+
+  const chip = document.createElement("span");
+  chip.className = "chip " + status;
+  chip.textContent = status;
+
+  const time = document.createElement("span");
+  time.className = "card-time";
+  time.textContent = formatTime(event.timestamp);
+
+  top.append(name, chip, time);
+  card.append(top);
+
+  const message = document.createElement("div");
+  message.className = "card-message";
+  message.dir = "auto";
+  message.style.display = "none";
+  card.append(message);
+
+  card.append(buildJsonSection("Request parameters", event.parameters));
+  if (event.result) card.append(buildJsonSection("Response result", event.result));
+
+  if (status !== "received") updateCard(card, status, event.result);
+  return card;
+}
+
+function updateCard(card, status, result) {
+  const chip = card.querySelector(".chip");
+  chip.className = "chip " + status;
+  chip.textContent = status;
+  if (status === "error") card.classList.add("error");
+
+  if (result) {
+    if (result.message) {
+      const message = card.querySelector(".card-message");
+      message.textContent = "“" + result.message + "”";
+      message.style.display = "block";
+    }
+    if (!card.querySelector('[data-section="Response result"]')) {
+      card.append(buildJsonSection("Response result", result));
+    }
+  }
+}
+
+function buildJsonSection(label, payload) {
+  const details = document.createElement("details");
+  details.dataset.section = label;
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(payload ?? {}, null, 2);
+  details.append(summary, pre);
+  return details;
+}
+
+function formatTime(isoString) {
+  const date = isoString ? new Date(isoString) : new Date();
+  return isNaN(date) ? isoString : date.toLocaleTimeString();
+}
+</script>
+</body>
+</html>
