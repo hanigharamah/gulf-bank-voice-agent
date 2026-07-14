@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from supabase import create_client
 
@@ -92,6 +92,17 @@ log = logging.getLogger("bank")
 
 app = Flask(__name__)
 CORS(app)
+
+# Vercel treats this Flask app as the catch-all for every path that isn't an
+# exact static-file match, which takes precedence over vercel.json rewrites —
+# so "/" must be served by Flask itself rather than relying on Vercel's
+# static-asset routing to resolve it to public/index.html.
+_PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
+
+
+@app.get("/")
+def serve_frontend():
+    return send_from_directory(_PUBLIC_DIR, "index.html")
 
 # Server-side client, authenticated with the service_role key — this is the
 # only key that ever touches this backend, and it bypasses RLS entirely.
