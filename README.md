@@ -33,7 +33,7 @@ for the full contract.
 
 This repo is structured for Vercel's current conventions (no legacy `builds`
 config):
-- `api/index.py` — the Flask backend; Vercel auto-detects the `app` WSGI
+- `api/bank.py` — the Flask backend; Vercel auto-detects the `app` WSGI
   object at this path and deploys it as a single Vercel Function
 - `public/index.html` — the static frontend, served automatically at `/`
   from Vercel's static-assets convention
@@ -60,7 +60,7 @@ Steps:
 ## Security notes specific to this variant
 
 - **`SUPABASE_SERVICE_ROLE_KEY`** bypasses Row Level Security entirely and is
-  used **only** server-side, inside `api/index.py`, sourced from Vercel's
+  used **only** server-side, inside `api/bank.py`, sourced from Vercel's
   environment variables. It is never sent to the browser.
 - **`SUPABASE_ANON_KEY`** (the "publishable" key) is safe to be public and
   lives directly in `index.html` — but it can only read the
@@ -77,8 +77,8 @@ Steps:
 ```bash
 pip install -r requirements.txt
 cp .env.example .env      # fill in real values
-python api/index.py       # NOTE: add app.run() locally, or use `flask run`
+python api/bank.py       # NOTE: add app.run() locally, or use `flask run`
 ```
 
 (Vercel calls the `app` WSGI object directly and never executes `app.run()`
-in production — that line is intentionally omitted from `api/index.py`.)
+in production — that line is intentionally omitted from `api/bank.py`.)
