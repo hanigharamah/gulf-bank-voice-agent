@@ -113,12 +113,16 @@
     margin: 22px auto 0;
     max-width: 440px;
   }
+  /* The ElevenLabs widget manages its own layout and expands to a large
+     "call" view (the orb) when active. Trapping it inside a fixed-size box
+     (via a containing-block transform) clips that expanded view, so we let
+     it float and size itself as designed. It docks to the corner set by the
+     widget's `placement` in the ElevenLabs dashboard. */
   #widget-container {
-    position: relative;
-    will-change: transform;
-    width: 340px;
-    min-height: 200px;
-    margin: 0 auto;
+    min-height: 96px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
   }
 
   #tool-panel {
