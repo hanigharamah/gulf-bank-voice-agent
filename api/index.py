@@ -46,16 +46,46 @@ except ImportError:
 # Configuration
 # --------------------------------------------------------------------------
 
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
-if not WEBHOOK_SECRET:
-    raise SystemExit("WEBHOOK_SECRET is not set.")
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise SystemExit("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set.")
-
 VERIFICATION_TTL_SECONDS = int(os.environ.get("VERIFICATION_TTL_SECONDS", "600"))
+
+
+def _missing_config() -> list[str]:
+    missing = []
+    if not os.environ.get("WEBHOOK_SECRET"):
+        missing.append("WEBHOOK_SECRET")
+    if not os.environ.get("SUPABASE_URL"):
+        missing.append("SUPABASE_URL")
+    if not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+    return missing
+
+
+def _config_error_response():
+    missing = _missing_config()
+    return jsonify({
+        "result": {
+            "ok": False,
+            "error": "misconfigured",
+            "message": (
+                "The banking backend is not configured. Missing Vercel "
+                f"environment variables: {', '.join(missing)}."
+            ),
+        }
+    }), 503
+
+
+_supabase = None
+
+
+def get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        if not url or not key:
+            raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set.")
+        _supabase = create_client(url, key)
+    return _supabase
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("bank")
@@ -67,7 +97,9 @@ CORS(app)
 # only key that ever touches this backend, and it bypasses RLS entirely.
 # The anon/public key is used exclusively client-side by the frontend to
 # read the tool_call_events table (see schema_realtime.sql).
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+# Initialized lazily so import succeeds even when env vars are missing —
+# Vercel would otherwise return FUNCTION_INVOCATION_FAILED before any
+# route handler can run.
 
 
 def format_halalas(halalas: int) -> str:
@@ -119,7 +151,7 @@ def get_verified_account(conversation_id) -> Optional[str]:
         return None
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=VERIFICATION_TTL_SECONDS)).isoformat()
     resp = (
-        supabase.table("verified_sessions")
+        get_supabase().table("verified_sessions")
         .select("account_id, verified_at")
         .eq("conversation_id", conversation_id)
         .gte("verified_at", cutoff)
@@ -151,7 +183,7 @@ def check_access(ctx: CallContext, account_id: str):
 
 def get_account(account_id):
     account_id = str(account_id or "")
-    resp = supabase.table("accounts").select("*").eq("account_id", account_id).limit(1).execute()
+    resp = get_supabase().table("accounts").select("*").eq("account_id", account_id).limit(1).execute()
     if not resp.data:
         return None, {
             "ok": False, "error": "unknown_account",
@@ -170,12 +202,12 @@ def get_account(account_id):
 
 def emit_event(call_id: str, status: str, tool: str, params: dict, result=None):
     if status == "received":
-        supabase.table("tool_call_events").insert({
+        get_supabase().table("tool_call_events").insert({
             "call_id": call_id, "tool_name": tool, "status": status,
             "parameters": params, "result": None,
         }).execute()
     else:
-        supabase.table("tool_call_events").update({
+        get_supabase().table("tool_call_events").update({
             "status": status, "result": result,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("call_id", call_id).execute()
@@ -191,8 +223,13 @@ def webhook_tool(tool_name: str, mutating: bool = False):
     def decorator(handler):
         @wraps(handler)
         def wrapper():
+            if _missing_config():
+                log.error("✗ %-28s rejected: backend not configured", tool_name)
+                return _config_error_response()
+
             provided = request.headers.get("X-Webhook-Secret", "")
-            if not hmac.compare_digest(provided, WEBHOOK_SECRET):
+            webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+            if not webhook_secret or not hmac.compare_digest(provided, webhook_secret):
                 log.warning("✗ %-28s rejected: bad or missing X-Webhook-Secret", tool_name)
                 return jsonify({"result": {
                     "ok": False, "error": "unauthorized",
@@ -215,7 +252,7 @@ def webhook_tool(tool_name: str, mutating: bool = False):
                 replayed = False
                 if mutating and ctx.idempotency_key:
                     existing = (
-                        supabase.table("processed_tool_calls")
+                        get_supabase().table("processed_tool_calls")
                         .select("result")
                         .eq("idempotency_key", ctx.idempotency_key)
                         .limit(1)
@@ -232,7 +269,7 @@ def webhook_tool(tool_name: str, mutating: bool = False):
                         log.warning("  %-28s mutating call without an idempotency key", tool_name)
                     result = handler(ctx)
                     if mutating and ctx.idempotency_key:
-                        supabase.table("processed_tool_calls").upsert({
+                        get_supabase().table("processed_tool_calls").upsert({
                             "idempotency_key": ctx.idempotency_key,
                             "tool_name": tool_name,
                             "result": result,
@@ -283,7 +320,7 @@ def verify_identity(ctx: CallContext):
                         "conversation id was sent with this tool call."),
         }
 
-    supabase.table("verified_sessions").upsert({
+    get_supabase().table("verified_sessions").upsert({
         "conversation_id": ctx.conversation_id,
         "account_id": account["account_id"],
         "verified_at": datetime.now(timezone.utc).isoformat(),
@@ -336,7 +373,7 @@ def get_transactions(ctx: CallContext):
         count = 5
 
     resp = (
-        supabase.table("transactions")
+        get_supabase().table("transactions")
         .select("occurred_on, merchant, amount_halalas, country, flagged")
         .eq("account_id", account["account_id"])
         .order("occurred_on", desc=True)
@@ -388,7 +425,7 @@ def _set_card_status(ctx: CallContext, target_status: str, verb: str):
                         f"already {target_status} — no action was needed."),
         }
 
-    supabase.table("accounts").update({"card_status": target_status}).eq(
+    get_supabase().table("accounts").update({"card_status": target_status}).eq(
         "account_id", account["account_id"]
     ).execute()
 
@@ -414,6 +451,9 @@ def unfreeze_card(ctx: CallContext):
 
 @app.get("/health")
 def health():
+    missing = _missing_config()
+    if missing:
+        return jsonify({"status": "misconfigured", "missing": missing}), 503
     return jsonify({"status": "ok"})
 
 
